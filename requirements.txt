@@ -1,0 +1,10 @@
+# 動作確認した版（2026-11-10、Python 3.12 / Windows / CPU）
+streamlit>=1.50,<2
+sentence-transformers>=5.0,<7
+transformers>=4.51,<6
+torch>=2.4
+numpy>=1.26
+pandas>=2.2
+altair>=5
+huggingface_hub>=0.30
+pytest>=8
