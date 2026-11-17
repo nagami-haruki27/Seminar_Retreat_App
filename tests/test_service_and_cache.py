@@ -94,6 +94,21 @@ class TestJudgeService:
         mu = out.reference.mean
         assert by["t1"].score == pytest.approx((0.8 - mu) / (1 - mu))
 
+    def test_reference_top_is_sorted_and_calibrated(self) -> None:
+        be = FakeBackend({"お題": 1.0, "りんご": 0.6, "机": 0.4, "猫": 0.5, "自転車": 0.1, "冬": 0.2, "a": 0.9})
+        out = JudgeService(be, REF_WORDS).play_round("お題", answers("a"), RoundSettings())
+        assert [w["word"] for w in out.reference_top] == ["りんご", "猫", "机", "冬", "自転車"]
+        assert out.reference_top[0]["raw"] == pytest.approx(0.6)
+        assert out.reference_top[0]["raw"] == pytest.approx(out.reference.maximum)
+        mu = out.reference.mean
+        assert out.reference_top[0]["score"] == pytest.approx((0.6 - mu) / (1 - mu))
+        raw = JudgeService(be, REF_WORDS).play_round("お題", answers("a"), RoundSettings(calibration=CalibrationMode.RAW))
+        assert raw.reference_top[0]["score"] == pytest.approx(0.6)
+
+    def test_reference_top_skips_words_overlapping_topic(self) -> None:
+        out = JudgeService(FakeBackend({"冬": 1.0}), REF_WORDS).play_round("冬", answers("雪"), RoundSettings())
+        assert "冬" not in [w["word"] for w in out.reference_top]
+
     def test_reference_words_overlapping_topic_are_excluded(self) -> None:
         svc = JudgeService(FakeBackend({"冬": 1.0}), REF_WORDS)
         out = svc.play_round("冬", answers("雪"), RoundSettings())

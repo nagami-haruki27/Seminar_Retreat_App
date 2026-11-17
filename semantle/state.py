@@ -50,6 +50,7 @@ class GameSettings:
     reveal_auto: bool = False
     reveal_interval_sec: float = 3.0
     timer_sec: int = 0  # 0 なら使わない
+    show_reference_slide: bool = True  # 「次へ」の流れに基準単語スライドを入れる
 
     def round_settings(self) -> RoundSettings:
         return RoundSettings(
@@ -87,6 +88,8 @@ class RoundRecord:
     results: list[AnswerResult]
     reference_mean: float | None = None
     reference_count: int = 0
+    # 基準語彙のうちお題に近かった語（近い順）。[{"word", "raw", "score"}, ...]
+    reference_top: list[dict[str, Any]] = field(default_factory=list)
 
     def round_settings(self, strict_contained: bool = False) -> RoundSettings:
         return RoundSettings(
@@ -117,6 +120,10 @@ class RoundRecord:
             results=[AnswerResult.from_dict(r) for r in d.get("results", [])],
             reference_mean=None if d.get("reference_mean") is None else float(d["reference_mean"]),
             reference_count=int(d.get("reference_count", 0)),
+            reference_top=[
+                {"word": str(w["word"]), "raw": float(w["raw"]), "score": float(w["score"])}
+                for w in d.get("reference_top") or []
+            ],
         )
 
 

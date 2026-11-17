@@ -30,8 +30,16 @@ def clear_streamlit_caches():
         pass
 
 
+@pytest.fixture(autouse=True)
+def fresh_live_sessions():
+    """司会者用・投影用で共有する状態はプロセス内に残るので、テストごとに捨てる。"""
+    from semantle.live import reset_live
+
+    reset_live()
+    yield
+    reset_live()
+
+
 @pytest.fixture
 def app_path() -> str:
     return str(ROOT / "app.py")
-
-

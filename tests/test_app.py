@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from semantle.live import reset_live
 from semantle.paths import results_csv_file, state_file
 
 SIMS = {"拡散モデル": 1.0, "ノイズ": 0.8, "画像生成": 0.7, "カレー": 0.2, "猫": 0.3}
@@ -36,6 +37,21 @@ def play(at: AppTest, topic: str, words: dict[str, str]) -> AppTest:
     at.button(key="btn_judge").click().run()
     assert not at.exception, at.exception
     return at
+
+
+def projector(app_path: str) -> AppTest:
+    """投影用画面（?view=screen）を別ウィンドウで開いた状態。"""
+    screen = AppTest.from_file(app_path, default_timeout=60)
+    screen.query_params["view"] = "screen"
+    screen.run()
+    assert not screen.exception, screen.exception
+    return screen
+
+
+def slide_text(screen: AppTest) -> str:
+    screen.run()
+    assert not screen.exception, screen.exception
+    return all_text(screen)
 
 
 @pytest.fixture
@@ -77,21 +93,26 @@ class TestRound:
         # 累計
         assert "3点" in text
 
-    def test_reveal_step_by_step(self, at: AppTest) -> None:
+    def test_reveal_step_by_step(self, at: AppTest, app_path: str) -> None:
         start_game(at)
+        screen = projector(app_path)
         play(at, "拡散モデル", {"t1": "ノイズ", "t2": "カレー", "t3": "画像生成", "t4": "猫"})
+        # 司会者用: 発表前でも全部見える
         text = all_text(at)
-        assert "発表中… 0 / 4" in text
-        assert "🏆" not in text
-        assert "（発表中）" in text  # 累計はまだ更新しない
-        at.button(key="btn_reveal_next").click().run()
-        text = all_text(at)
-        assert "発表中… 1 / 4" in text
-        assert "カレー" in text and "ノイズ" not in text.split("これまでのラウンド")[0]
+        assert "発表済み 0 / 4" in text
+        assert "🏆 1位：チーム1「ノイズ」" in text and "🙈 未発表" in text
+        # 投影用: まだ何も出ていない
+        shown = slide_text(screen)
+        assert "結果発表　0 / 4" in shown
+        assert "ノイズ" not in shown and "カレー" not in shown and "🏆" not in shown
+        at.button(key="btn_slide_next").click().run()
+        assert "発表済み 1 / 4" in all_text(at)
+        shown = slide_text(screen)
+        assert "カレー" in shown and "ノイズ" not in shown
         at.button(key="btn_reveal_all").click().run()
-        text = all_text(at)
-        assert "🏆 1位：チーム1「ノイズ」" in text
-        assert "（発表中）" not in text
+        shown = slide_text(screen)
+        assert "🏆 1位：チーム1「ノイズ」" in shown
+        assert "🙈 未発表" not in all_text(at)
         assert not at.exception
 
     def test_rule2_target(self, at: AppTest) -> None:
@@ -138,12 +159,12 @@ class TestRound:
     def test_back_to_input_keeps_inputs(self, at: AppTest) -> None:
         start_game(at, 2)
         play(at, "拡散モデル", {"t1": "ノイズ", "t2": "カレー"})
-        assert "発表中… 0 / 2" in all_text(at)
+        assert "発表済み 0 / 2" in all_text(at)
         at.button(key="btn_back_input").click().run()
         assert not at.exception
         assert at.text_input(key="ans_t1").value == "ノイズ"
         text = all_text(at)
-        assert "（発表中）" not in text  # 途中で戻ったら発表は終わった扱い
+        assert "発表済み" not in text and "発表が終わるまで" not in text  # 途中で戻ったら発表は終わった扱い
         assert "3点" in text
 
     def test_judge_disabled_without_topic(self, at: AppTest) -> None:
@@ -245,7 +266,8 @@ class TestResume:
         start_game(at, 2)
         at.sidebar.toggle(key="set_reveal").set_value(False).run()
         play(at, "拡散モデル", {"t1": "ノイズ", "t2": "カレー"})
-        # 別プロセス相当: 新しい AppTest で起動し直す
+        # 別プロセス相当: 共有状態を捨て、新しい AppTest で起動し直す
+        reset_live()
         at2 = AppTest.from_file(app_path, default_timeout=60)
         at2.run()
         assert not at2.exception
@@ -276,3 +298,114 @@ class TestTimer:
         assert not at.exception
         at.button(key="btn_timer_stop").click().run()
         assert not at.exception
+
+
+class TestProjector:
+    """投影用画面は司会者用画面の操作に追従し、入力中の単語や操作ボタンを出さない。"""
+
+    def test_title_before_and_after_start(self, at: AppTest, app_path: str) -> None:
+        screen = projector(app_path)
+        assert "準備中" in all_text(screen)
+        assert not screen.button and not screen.text_input
+        start_game(at, 2)
+        text = slide_text(screen)
+        assert "準備中" not in text and "チーム1" in text and "チーム2" in text
+        assert not screen.button and not screen.text_input
+
+    def test_slide_navigation(self, at: AppTest, app_path: str) -> None:
+        start_game(at, 2)
+        screen = projector(app_path)
+        assert at.button(key="btn_slide_topic").disabled and at.button(key="btn_slide_result").disabled
+        at.button(key="btn_slide_next").click().run()
+        assert "ルール説明" in slide_text(screen)
+        at.button(key="btn_slide_prev").click().run()
+        assert "チーム対抗" in slide_text(screen)
+        at.button(key="btn_slide_standings").click().run()
+        assert "累計得点" in slide_text(screen)
+
+    def test_topic_is_projected_but_answers_are_not(self, at: AppTest, app_path: str) -> None:
+        start_game(at, 2)
+        screen = projector(app_path)
+        at.text_input(key="topic").input("拡散モデル")
+        at.text_input(key="ans_t1").input("ノイズ")
+        at.run()
+        assert "拡散モデル" not in slide_text(screen)  # 入力しただけでは出ない
+        at.button(key="btn_publish_topic").click().run()
+        text = slide_text(screen)
+        assert "お題発表" in text and "拡散モデル" in text and "第1問" in text
+        assert "ノイズ" not in text
+
+    def test_timer_shows_on_topic_slide(self, at: AppTest, app_path: str) -> None:
+        start_game(at, 2)
+        screen = projector(app_path)
+        at.sidebar.number_input(key="set_timer").set_value(90).run()
+        at.text_input(key="topic").input("拡散モデル").run()
+        at.button(key="btn_publish_topic").click().run()
+        assert "制限時間 01:30" in slide_text(screen)
+        at.button(key="btn_timer_start").click().run()
+        assert "⏱ 01:" in slide_text(screen)
+
+    def test_full_round_flow_with_reference_slide(self, at: AppTest, app_path: str) -> None:
+        start_game(at, 2)
+        at.sidebar.toggle(key="set_reveal").set_value(False).run()
+        screen = projector(app_path)
+        play(at, "拡散モデル", {"t1": "ノイズ", "t2": "カレー"})
+        assert "🏆 1位：チーム1「ノイズ」" in slide_text(screen)
+        # 司会者用画面に基準単語の最高スコアが出る
+        data = json.loads(state_file().read_text(encoding="utf-8"))
+        top = data["rounds"][0]["reference_top"]
+        assert len(top) == 10 and top[0]["score"] >= top[1]["score"]
+        assert "基準単語との比較" in all_text(at)
+        metrics = {m.label: m.value for m in at.metric}
+        assert metrics["基準単語の最高スコア"] == f"{top[0]['score']:.3f}"
+        # 次へ → 基準単語 → 累計得点
+        at.button(key="btn_slide_next").click().run()
+        text = slide_text(screen)
+        assert "基準単語の最高スコア" in text and top[0]["word"] in text and "ノイズ" in text
+        at.button(key="btn_slide_next").click().run()
+        text = slide_text(screen)
+        assert "累計得点" in text and "3点" in text and "1 問終了" in text
+        assert at.button(key="btn_slide_next").disabled
+
+    def test_reference_slide_can_be_skipped(self, at: AppTest, app_path: str) -> None:
+        start_game(at, 2)
+        at.sidebar.toggle(key="set_reveal").set_value(False).run()
+        at.sidebar.toggle(key="set_ref_slide").set_value(False).run()
+        screen = projector(app_path)
+        play(at, "拡散モデル", {"t1": "ノイズ", "t2": "カレー"})
+        at.button(key="btn_slide_next").click().run()
+        assert "累計得点" in slide_text(screen)
+        assert not at.button(key="btn_slide_reference").disabled  # 直接映すことはできる
+
+    def test_standings_hold_points_until_revealed(self, at: AppTest, app_path: str) -> None:
+        start_game(at, 2)
+        screen = projector(app_path)
+        play(at, "拡散モデル", {"t1": "ノイズ", "t2": "カレー"})
+        at.button(key="btn_slide_standings").click().run()
+        text = slide_text(screen)
+        assert "3点" not in text and "0 問終了" in text
+        at.button(key="btn_slide_result").click().run()
+        at.button(key="btn_reveal_all").click().run()
+        at.button(key="btn_slide_standings").click().run()
+        assert "3点" in slide_text(screen)
+
+    def test_next_round_shows_standings_and_undo_leaves_result(self, at: AppTest, app_path: str) -> None:
+        start_game(at, 2)
+        at.sidebar.toggle(key="set_reveal").set_value(False).run()
+        screen = projector(app_path)
+        play(at, "拡散モデル", {"t1": "ノイズ", "t2": "カレー"})
+        at.button(key="btn_next_round").click().run()
+        assert "累計得点" in slide_text(screen)
+        at.button(key="btn_slide_result").click().run()
+        at.sidebar.checkbox(key="undo_confirm").check().run()
+        at.sidebar.button(key="btn_undo").click().run()
+        text = slide_text(screen)
+        assert "累計得点" in text and "ノイズ" not in text
+
+    def test_html_in_names_is_escaped(self, at: AppTest, app_path: str) -> None:
+        start_game(at, 2)
+        at.sidebar.toggle(key="set_reveal").set_value(False).run()
+        screen = projector(app_path)
+        play(at, "拡散モデル", {"t1": "<b>ノイズ</b>", "t2": "カレー"})
+        text = slide_text(screen)
+        assert "&lt;b&gt;ノイズ&lt;/b&gt;" in text and "<b>ノイズ" not in text

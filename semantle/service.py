@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
-from semantle.calibration import CalibrationMode
+from semantle.calibration import CalibrationMode, calibrate
 from semantle.embeddings.base import EmbeddingBackend
 from semantle.judge import (
     AnswerResult,
@@ -28,6 +28,22 @@ class RoundOutcome:
     results: list[AnswerResult]
     reference: ReferenceStats
     topic: str
+    # 基準語彙のうちお題に近かった語（近い順）。[{"word", "raw", "score"}, ...]
+    reference_top: list[dict[str, float | str]] = field(default_factory=list)
+
+
+REFERENCE_TOP_N = 10
+
+
+def reference_ranking(
+    words: Sequence[str], sims: np.ndarray, mode: CalibrationMode, top_n: int = REFERENCE_TOP_N
+) -> list[dict[str, float | str]]:
+    """基準語彙をお題との類似度が高い順に並べ、上位 ``top_n`` 語を補正スコア付きで返す。"""
+    order = np.argsort(-np.asarray(sims, dtype=np.float64), kind="stable")[:top_n]
+    return [
+        {"word": words[i], "raw": float(sims[i]), "score": float(calibrate(float(sims[i]), sims, mode))}
+        for i in order
+    ]
 
 
 class JudgeService:
@@ -37,6 +53,11 @@ class JudgeService:
 
     def topic_reference_sims(self, topic: str) -> tuple[np.ndarray, ReferenceStats]:
         """お題と基準語彙の類似度（お題と重なる語は除く）。"""
+        _, sims, stats = self._reference(topic)
+        return sims, stats
+
+    def _reference(self, topic: str) -> tuple[list[str], np.ndarray, ReferenceStats]:
+        """(残った基準語, その類似度, 要約)。"""
         topic_clean = clean_for_embedding(topic)
         kept, dropped = filter_reference_words(self.reference_words, topic_clean)
         if not kept:
@@ -47,7 +68,7 @@ class JudgeService:
             count=len(kept), mean=float(sims.mean()), minimum=float(sims.min()), maximum=float(sims.max()),
             excluded=dropped,
         )
-        return sims, stats
+        return kept, sims, stats
 
     def similarities(self, topic: str, texts: Sequence[str]) -> dict[str, float]:
         topic_clean = clean_for_embedding(topic)
@@ -64,11 +85,12 @@ class JudgeService:
         entries = prepare_entries(answers, topic_clean, settings)
         texts = texts_to_embed(entries)
         # 補正なしでも基準語彙の統計は表示に使うので毎回計算する（キャッシュ済みなら一瞬）
-        ref_sims, stats = self.topic_reference_sims(topic_clean)
+        kept, ref_sims, stats = self._reference(topic_clean)
         raw_by_text = self.similarities(topic_clean, texts)
         score_entries(entries, raw_by_text, ref_sims, settings.calibration)
         rank_entries(entries, settings)
-        return RoundOutcome(results=entries, reference=stats, topic=topic_clean)
+        top = reference_ranking(kept, ref_sims, settings.calibration)
+        return RoundOutcome(results=entries, reference=stats, topic=topic_clean, reference_top=top)
 
     def score_table(self, topic: str, words: Sequence[str]) -> list[dict[str, float | str]]:
         """比較スクリプト用: 各単語の raw / A / B を返す。"""
@@ -76,8 +98,6 @@ class JudgeService:
         ref_sims, _ = self.topic_reference_sims(topic_clean)
         cleaned = [clean_for_embedding(w) for w in words]
         raw = self.similarities(topic_clean, cleaned)
-        from semantle.calibration import calibrate
-
         rows: list[dict[str, float | str]] = []
         for w in cleaned:
             r = raw[w]
